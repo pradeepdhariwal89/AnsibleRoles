@@ -1,0 +1,51 @@
+---
+# tasks file for k8s-cluster-create
+
+# ==================== INITIALIZE KUBERNETES CLUSTER ====================
+- name: Initialize Kubernetes cluster with kubeadm
+  command: >
+    kubeadm init 
+    --pod-network-cidr={{ pod_network_cidr }} 
+  args:
+    creates: /etc/kubernetes/admin.conf
+  register: kubeadm_init
+
+- name: Create .kube directory for the root user
+  file:
+    path: /home/{{ ansible_user }}/.kube
+    state: directory
+    mode: '0700'
+  when: kubeadm_init.changed
+
+- name: Copy Kubernetes config for root user
+  copy:
+    src: /etc/kubernetes/admin.conf
+    dest: /home/{{ ansible_user }}/config
+    remote_src: yes
+  when: kubeadm_init.changed
+
+- name: Get join command
+  command: kubeadm token create --print-join-command
+  register: join_command
+  when: kubeadm_init.changed
+
+- name: Set join command as fact
+  set_fact:
+    join_command: "{{ join_command.stdout }}"
+  when: kubeadm_init.changed
+
+- name: Display join command for worker nodes
+  debug:
+    var: join_command
+  when: kubeadm_init.changed
+
+# ==================== INSTALL CNI (CALICO) ====================
+- name: Install Calico CNI
+  command: kubectl apply -f https://docs.projectcalico.org/manifests/calico.yaml
+  when: kubeadm_init.changed
+
+# ==================== UNTAINT MASTER NODE (SINGLE NODE SETUP) ====================
+- name: Untaint master node to allow pod scheduling
+  command: kubectl taint nodes --all node-role.kubernetes.io/control-plane-
+  ignore_errors: yes
+  when: kubeadm_init.changed and untaint_master

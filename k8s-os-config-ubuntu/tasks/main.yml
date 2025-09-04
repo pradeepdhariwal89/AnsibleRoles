@@ -1,0 +1,151 @@
+---
+# tasks file for k8s-os-config-ubuntu
+
+# ==================== UPDATE / INSTALL PACKAGES ====================
+- name: Update all packages
+  apt:
+    name: "*"
+    state: latest
+    update_cache: yes
+
+- name: Install required packages
+  apt:
+    name:
+      - curl
+      - apt-transport-https
+      - ca-certificates
+      - gnupg
+      - lsb-release
+      - wget
+      - vim
+      - containerd
+    state: present
+
+# ==================== SYSTEM CONFIGURATION ====================
+- name: Check swap status
+  command: swapon --show
+  register: swap_status
+  changed_when: false
+
+- name: Disable swap
+  command: swapoff -a
+  when: swap_status.stdout | length > 0
+
+- name: Disable swap in fstab
+  replace:
+    path: /etc/fstab
+    regexp: '^([^#].*\sswap\s.*)$'
+    replace: '# \1'
+
+- name: Stop and disable firewall
+  ufw:
+    state: disabled
+
+- name: Enable IP forwarding
+  sysctl:
+    name: net.ipv4.ip_forward
+    value: '1'
+    state: present
+    sysctl_set: yes
+    reload: yes
+
+- name: Load br_netfilter module
+  modprobe:
+    name: br_netfilter
+    state: present
+
+- name: Enable bridge-nf-call-iptables
+  sysctl:
+    name: net.bridge.bridge-nf-call-iptables
+    value: '1'
+    state: present
+    sysctl_set: yes
+    reload: yes
+
+- name: Enable bridge-nf-call-ip6tables
+  sysctl:
+    name: net.bridge.bridge-nf-call-ip6tables
+    value: '1'
+    state: present
+    sysctl_set: yes
+    reload: yes
+
+- name: Ensure br_netfilter loads on boot
+  lineinfile:
+    path: /etc/modules-load.d/k8s.conf
+    line: br_netfilter
+    create: yes
+
+- name: Ensure overlay module loads on boot
+  lineinfile:
+    path: /etc/modules-load.d/k8s.conf
+    line: overlay
+    create: yes
+
+# ==================== CONTAINERD CONFIGURATION ====================
+- name: Create containerd config directory
+  file:
+    path: /etc/containerd
+    state: directory
+
+- name: Generate default containerd config
+  shell: containerd config default > /etc/containerd/config.toml
+  args:
+    creates: /etc/containerd/config.toml
+  register: containerd_status
+
+- name: Configure containerd to use systemd cgroup driver
+  replace:
+    path: /etc/containerd/config.toml
+    regexp: 'SystemdCgroup = false'
+    replace: 'SystemdCgroup = true'
+  when: containerd_status.changed
+
+- name: Start and enable containerd
+  systemd:
+    name: containerd
+    state: restarted
+    enabled: yes
+    daemon_reload: yes
+  when: containerd_status.changed
+
+# ==================== KUBERNETES COMPONENTS ====================
+- name: Create apt keyring directory
+  file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: '0755'
+
+- name: Download Kubernetes signing key
+  shell: |
+    curl -fsSL https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_version }}/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+  args:
+    executable: /bin/bash
+    creates: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+
+- name: Add Kubernetes apt repository to sources list
+  shell: |
+    echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_version }}/deb/ /" | tee /etc/apt/sources.list.d/kubernetes.list
+  args:
+    executable: /bin/bash
+    creates: /etc/apt/sources.list.d/kubernetes.list
+  register: k8s_registery_status
+
+- name: Update all packages
+  apt:
+    update_cache: yes
+  when: k8s_registery_status.changed
+
+- name: Install Kubernetes components
+  apt:
+    name:
+      - kubelet
+      - kubeadm
+      - kubectl
+    state: present
+
+- name: Enable and start kubelet
+  systemd:
+    name: kubelet
+    state: started
+    enabled: yes
