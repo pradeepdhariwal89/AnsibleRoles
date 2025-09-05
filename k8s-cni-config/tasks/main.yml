@@ -1,0 +1,21 @@
+#SPDX-License-Identifier: MIT-0
+---
+# tasks file for k8s-cni-config
+
+- name: Apply Calico manifest
+  kubernetes.core.k8s:
+    state: present
+    src: "https://docs.projectcalico.org/manifests/calico.yaml"
+  when: cni_plugin == "Calico"
+
+- name: Apply Flannel manifest
+  kubernetes.core.k8s:
+    state: present
+    src: "https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml"
+  when: cni_plugin == "Flannel"
+
+- name: Apply CNI manifest from URL
+  kubernetes.core.k8s:
+    state: present
+    src: "{{ cni_plugin_url }}"
+  when: cni_plugin == "URL"

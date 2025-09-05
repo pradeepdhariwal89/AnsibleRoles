@@ -37,11 +37,6 @@
   debug:
     var: join_command
 
-# ==================== INSTALL CNI (CALICO) ====================
-- name: Install Calico CNI
-  command: kubectl apply -f https://docs.projectcalico.org/manifests/calico.yaml
-  when: kubeadm_init.changed
-
 # ==================== UNTAINT MASTER NODE (SINGLE NODE SETUP) ====================
 - name: Untaint master node to allow pod scheduling
   command: kubectl taint nodes --all node-role.kubernetes.io/control-plane-

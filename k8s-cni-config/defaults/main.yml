@@ -1,0 +1,8 @@
+#SPDX-License-Identifier: MIT-0
+---
+# defaults file for k8s-cni-config
+
+cni_plugin: "Calico"
+
+# Required only if cni_plugin is URL
+cni_plugin_url: ""
