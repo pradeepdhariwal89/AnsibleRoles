@@ -1,0 +1,115 @@
+---
+# tasks file for k8s-user-create
+
+################ CREATE USER AND CERTIFICATES ############
+- name: Create certificate directory
+  ansible.builtin.file:
+    path: "{{ cert_dir }}"
+    state: directory
+    mode: '0700'
+
+- name: Generate a private key for the user
+  community.crypto.openssl_privatekey:
+    path: "{{ cert_dir }}/{{ user_name }}.key"
+    size: 2048
+    mode: '0600'
+
+- name: Generate a Certificate Signing Request (CSR)
+  community.crypto.openssl_csr_pipe:
+    privatekey_path: "{{ cert_dir }}/{{ user_name }}.key"
+    common_name: "{{ user_name }}"
+    organization_name: "{{ user_group }}"
+  register: user_csr_result
+
+- name: Create Kubernetes CertificateSigningRequest object
+  kubernetes.core.k8s:
+    state: present
+    api_version: certificates.k8s.io/v1
+    kind: CertificateSigningRequest
+    name: "{{ user_name }}-csr"
+    definition:
+      spec:
+        request: "{{ user_csr_result.csr | b64encode }}"
+        signerName: kubernetes.io/kube-apiserver-client
+        usages:
+          - client auth
+  register: k8s_csr_creation
+
+- name: Approve the CertificateSigningRequest
+  ansible.builtin.shell: "kubectl certificate approve {{ user_name }}-csr"
+  register: approve_csr
+  changed_when: "'approved' in approve_csr.stdout"
+
+- name: Retrieve the signed certificate
+  ansible.builtin.shell: "kubectl get csr {{ user_name }}-csr -o jsonpath='{.status.certificate}' | base64 --decode > {{ cert_dir }}/{{ user_name }}.crt"
+  args:
+    creates: "{{ cert_dir }}/{{ user_name }}.crt"
+
+- name: Get certificates to local directory
+  synchronize:
+    src: "{{ cert_dir }}"
+    dest: "{{ cert_dir }}"
+    mode: pull
+    recursive: yes
+
+- name: Get cluster info
+  ansible.builtin.command: "kubectl config view --minify -o json"
+  register: kube_config_view
+  changed_when: false
+  failed_when: kube_config_view.rc != 0
+
+
+################## CREATE USER NAMESPACE #################
+- name: Create user namespace
+  kubernetes.core.k8s:
+    state: present
+    apiVersion: v1
+    kind: namespace
+    name: "{{ user_name }}-ns"
+
+################## CREATE ROLE AND ROLE BINDINGS ################
+- name: Create RBAC Role for the user
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata:
+        namespace: "{{ user_name }}-ns"
+        name: "{{ user_name }}-role"
+      rules:
+        - apiGroups: [""]
+          resources: ["*"]
+          verbs: ["*"]
+  register: rbac_role_creation
+  
+- name: Create RoleBinding for the user
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        namespace: "{{ user_name }}-ns"
+        name: "{{ user_name }}-rolebinding"
+      subjects:
+        - kind: User
+          name: "{{ user_name }}"
+          apiGroup: rbac.authorization.k8s.io
+      roleRef:
+        kind: Role
+        name: "{{ user_name }}-role"
+        apiGroup: rbac.authorization.k8s.io
+  register: rbac_binding_creation
+
+- name: Display instructions for new user
+  ansible.builtin.debug:
+    msg: |
+      User '{{ user_name }}' has been created.
+      The user certificate and key are located at {{ cert_dir }}.
+      You can provide these files to the user to configure their kubeconfig.
+      
+      Example commands to set the user and context:
+      kubectl config set-credentials {{ user_name }} --client-certificate={{cert_dir}}/{{user_name}}.crt --client-key={{cert_dir}}/{{user_name}}.key --embed-certs=true --kubeconfig=$HOME/.kube/config
+      kubectl config set-context {{ user_name }}-context --cluster={{ (kube_config_view.stdout | from_json).clusters[0].name }} --user={{ user_name }}
+      kubectl config use-context {{ user_name }}-context

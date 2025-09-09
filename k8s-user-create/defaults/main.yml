@@ -1,0 +1,6 @@
+---
+# defaults file for k8s-user-create
+
+user_name: "ansible-dev"
+user_group: "automation-dev"
+cert_dir: "/tmp/k8s-certs/{{ user_name }}"
